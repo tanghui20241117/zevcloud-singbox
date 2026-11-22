@@ -9,23 +9,52 @@
 #  - Build for linux/amd64. One container per service.
 #  - Do NOT bake secrets into image layers: the live UUID should come
 #    from the Variables tab at runtime (see entrypoint.sh + README.md).
-#
 # Free tier this targets: 512 MB RAM / 1 vCPU / 1 GB storage,
 # build timeout 10 min, no sleep, unmetered bandwidth.
+#
+# Build note (CVE-2026-33186): the prebuilt sing-box v1.14.4 release binary
+# bundles google.golang.org/grpc v1.79.1, which carries CVE-2026-33186
+# (CRITICAL, gRPC-Go authorization bypass). Komuta's security scan fails
+# the build on any CRITICAL finding, and a downloaded binary cannot be
+# patched. sing-box is therefore compiled here from the v1.14.4 source
+# with grpc bumped to v1.79.3 (the fixed version). The sing-box version
+# itself is unchanged and still pinned: do NOT use latest, a floating
+# tag can change the binary under a rebuild.
 
+# ---- build stage: compile sing-box v1.14.4 from source ----
+FROM golang:1.25-alpine AS builder
+
+ARG SING_BOX_VERSION=1.14.4
+
+RUN set -eux; \
+    apk add --no-cache ca-certificates git; \
+    wget -qO /tmp/sing-box-src.tar.gz \
+      "https://github.com/SagerNet/sing-box/archive/refs/tags/v${SING_BOX_VERSION}.tar.gz"; \
+    mkdir -p /src; \
+    tar -xzf /tmp/sing-box-src.tar.gz -C /src --strip-components=1; \
+    rm -f /tmp/sing-box-src.tar.gz
+
+WORKDIR /src
+
+# Bump grpc to the CVE-fixed version, then build a static binary.
+# Build tags match the upstream release build (full feature set).
+RUN set -eux; \
+    export CGO_ENABLED=0; \
+    mkdir -p /out; \
+    go mod edit -require=google.golang.org/grpc@v1.79.3; \
+    go mod tidy; \
+    go build -trimpath -ldflags "-s -w -buildid=" \
+      -tags "with_gvisor,with_quic,with_dhcp,with_wireguard,with_ech,with_utls,with_reality_server,with_acme,with_clash_api,with_v2ray_api" \
+      -o /out/sing-box ./cmd/sing-box; \
+    /out/sing-box version
+
+# ---- runtime stage: identical to the previous image ----
 FROM alpine:3.21
 
-# sing-box pinned to a known-good release (musl build = correct for Alpine).
-# Do NOT use latest: a floating tag can change the binary under a rebuild.
-ARG SING_BOX_VERSION=1.14.4
+COPY --from=builder /out/sing-box /usr/local/bin/sing-box
+
 RUN apk add --no-cache ca-certificates jq \
- && wget -qO /tmp/sing-box.tar.gz \
-      "https://github.com/SagerNet/sing-box/releases/download/v${SING_BOX_VERSION}/sing-box-${SING_BOX_VERSION}-linux-amd64-musl.tar.gz" \
- && mkdir -p /tmp/sb \
- && tar -xzf /tmp/sing-box.tar.gz -C /tmp/sb \
- && mv "$(find /tmp/sb -name sing-box -type f | head -n 1)" /usr/local/bin/sing-box \
  && chmod +x /usr/local/bin/sing-box \
- && rm -rf /tmp/sing-box.tar.gz /tmp/sb \
  && sing-box version
 
 COPY config.json /etc/sing-box/config.json
@@ -36,5 +65,4 @@ RUN chmod +x /entrypoint.sh
 # rewrites listen_port to it; 8080 is only the fallback when $PORT is unset.
 ENV PORT=8080
 EXPOSE 8080
-
 ENTRYPOINT ["/entrypoint.sh"]
