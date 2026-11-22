@@ -38,13 +38,16 @@ WORKDIR /src
 
 # Bump grpc to the CVE-fixed version, then build a static binary.
 # Build tags match the upstream release build (full feature set).
+# Note: with_ech and with_reality_server were removed in sing-box v1.14.4
+# (ECH moved to stdlib; Reality Server merged into with_utls) — passing
+# them makes the build fail, so they are intentionally left out.
 RUN set -eux; \
     export CGO_ENABLED=0; \
     mkdir -p /out; \
     go mod edit -require=google.golang.org/grpc@v1.79.3; \
     go mod tidy; \
     go build -trimpath -ldflags "-s -w -buildid=" \
-      -tags "with_gvisor,with_quic,with_dhcp,with_wireguard,with_ech,with_utls,with_reality_server,with_acme,with_clash_api,with_v2ray_api" \
+      -tags "with_gvisor,with_quic,with_dhcp,with_wireguard,with_utls,with_acme,with_clash_api,with_v2ray_api" \
       -o /out/sing-box ./cmd/sing-box; \
     /out/sing-box version
 
